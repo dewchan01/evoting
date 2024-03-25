@@ -1,132 +1,119 @@
-App = {
+const App = {
   web3Provider: null,
   contracts: {},
   account: '0x0',
-  hasVoted: false,
 
-  init: async function() {
-    return await App.initWeb3();
+  init: async function () {
+    await this.initWeb3();
+    await this.initContract();
+    this.listenForEvents();
+    this.render();
   },
 
-  initWeb3: async function() {
-    if (window.ethereum) {  // Modern dapp browsers
-      App.web3Provider = window.ethereum;
+  initWeb3: async function () {
+    if (window.ethereum) {
+      this.web3Provider = window.ethereum;
       try {
-        await window.ethereum.enable();  // Request account access
-      } catch (error) {  // User denied account access...
-        console.error("User denied account access")
+        await window.ethereum.enable();
+      } catch (error) {
+        console.error("User denied account access");
       }
-    } else if (window.web3) {  // Legacy dapp browsers
-      App.web3Provider = window.web3.currentProvider;
-    } else {  // If no injected web3 instance is detected, fall back to Ganache
-      App.web3Provider = new Web3.providers.HttpProvider('http://localhost:7545');
+    } else if (window.web3) {
+      this.web3Provider = window.web3.currentProvider;
+    } else {
+      this.web3Provider = new Web3.providers.HttpProvider('http://localhost:7545');
     }
-    web3 = new Web3(App.web3Provider);
-    return App.initContract();
+    web3 = new Web3(this.web3Provider);
   },
 
-  initContract: function() {
-    $.getJSON("Evoting.json", function(data) {
-      // Instantiate a new truffle contract from the artifact
-      App.contracts.Evoting = TruffleContract(data);
-      // Connect provider to interact with contract
-      App.contracts.Evoting.setProvider(App.web3Provider);
-
-      App.listenForEvents();
-
-      return App.render();
-    });
+  initContract: async function () {
+    const data = await $.getJSON("Evoting.json");
+    this.contracts.Evoting = TruffleContract(data);
+    this.contracts.Evoting.setProvider(this.web3Provider);
   },
 
-  // Listen for events emitted from the contract
-  listenForEvents: function() {
-    App.contracts.Evoting.deployed().then(function(instance) {
-      // Restart Chrome if you are unable to receive this event
-      // This is a known issue with MetaMask
-      // https://github.com/MetaMask/metamask-extension/issues/2393
+  listenForEvents: function () {
+    this.contracts.Evoting.deployed().then(function (instance) {
       instance.votedEvent({}, {
         fromBlock: 0,
         toBlock: 'latest'
-      }).watch(function(error, event) {
+      }).watch(function (error, event) {
         console.log("event triggered", event)
-        // Reload when a new vote is recorded
-        App.render();
-      });
+        if (event){
+          $("#content").show();
+          $("#loader").hide();
+          App.render();
+          // to block rerender
+          event.preventDefault();
+        }
+      })
     });
   },
 
-  render: function() {
-    var evotingInstance;
-    var loader = $("#loader");
-    var content = $("#content");
 
+  render: function () {
+    const loader = $("#loader");
+    const content = $("#content");
     loader.show();
     content.hide();
 
-    // Load account data
-    web3.eth.getAccounts(function(err, accounts) {
+    web3.eth.getAccounts(function (err, accounts) {
       if (err) {
-         console.log(err);
+        console.log(err);
       }
       App.account = accounts[0];
       $("#accountAddress").html("Your Account: " + App.account);
     });
 
-    // Load contract data
-    App.contracts.Evoting.deployed().then(function(instance) {
-      evotingInstance = instance;
-      return evotingInstance.numCandidates();
-    }).then(function(numCandidates) {
-      var candidatesResults = $("#candidatesResults");
+    this.contracts.Evoting.deployed().then(async function (instance) {
+      const numCandidates = await instance.numCandidates();
+      const candidatesResults = $("#candidatesResults");
       candidatesResults.empty();
-
-      var candidatesSelect = $('#candidatesSelect');
+      const candidatesSelect = $('#candidatesSelect');
       candidatesSelect.empty();
-
-      for (var i = 1; i <= numCandidates; i++) {
-        evotingInstance.candidates(i).then(function(candidate) {
-          var id = candidate[0];
-          var name = candidate[1];
-          var numVotes = candidate[2];
-
-          // Render candidate Result
-          var candidateTemplate = "<tr><th>" + id + "</th><td>" + name + "</td><td>" + numVotes + "</td></tr>"
-          candidatesResults.append(candidateTemplate);
-
-          // Render candidate ballot option
-          var candidateOption = "<option value='" + id + "' >" + name + "</ option>"
-          candidatesSelect.append(candidateOption);
-        });
+      const candidatePromises = [];
+      for (let rank = 1; rank <= numCandidates; rank++) {
+        candidatePromises.push(instance.candidates(rank));
       }
-      return evotingInstance.voters(App.account);
-    }).then(function(hasVoted) {
-      // Do not allow a user to vote
-      if(hasVoted) {
+      const candidateData = await Promise.all(candidatePromises);
+      candidateData.sort((a, b) => b[2] - a[2]);
+      console.log(candidateData)
+      candidateData.forEach(function (candidate) {
+        const id = candidate[0];
+        const name = candidate[1];
+        const numVotes = candidate[2];
+        const candidateTemplate = "<tr><th>" + id + "</th><td>" + name + "</td><td>" + numVotes + "</td></tr>";
+        candidatesResults.append(candidateTemplate);
+        const candidateOption = "<option value='" + id + "' >" + name + "</ option>";
+        candidatesSelect.append(candidateOption);
+      });
+      const hasVoted = await instance.voters(App.account);
+      if (hasVoted) {
         $('form').hide();
       }
       loader.hide();
       content.show();
-    }).catch(function(error) {
+    }).catch(function (error) {
       console.warn(error);
     });
   },
 
-  castVote: function() {
-    var candidateId = $('#candidatesSelect').val();
-    App.contracts.Evoting.deployed().then(function(instance) {
+
+  castVote: function () {
+    const candidateId = $('#candidatesSelect').val();
+    this.contracts.Evoting.deployed().then(function (instance) {
       return instance.vote(candidateId, { from: App.account });
-    }).then(function(result) {
-      // Wait for votes to update
+    }).then(function (result) {
       $("#content").hide();
       $("#loader").show();
-    }).catch(function(err) {
+    }).catch(function (err) {
       console.error(err);
     });
   }
 };
 
-$(function() {
-  $(window).load(function() {
+$(function () {
+  $(window).on('load', function () {
     App.init();
   });
 });
